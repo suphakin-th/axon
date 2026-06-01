@@ -5,7 +5,7 @@
 services:
 
   app:
-    image: ${APP_IMAGE}:${APP_VERSION:-latest}
+    image: ${APP_IMAGE:-ghcr.io/suphakin-th/axon}:${APP_VERSION:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-axon}_app
     restart: unless-stopped
     env_file: .env
