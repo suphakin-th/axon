@@ -1,0 +1,79 @@
+# -- Secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# -- Claude Code artifacts
+.c*
+CLAUDE.md
+
+# -- Dependencies
+node_modules/
+vendor/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pip/
+target/
+bin/
+obj/
+packages/
+
+# -- Build outputs
+dist/
+build/
+out/
+*.jar
+*.war
+*.class
+*.o
+*.so
+*.dylib
+*.exe
+*.dll
+public/hot/
+public/build/
+
+# -- OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# -- Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+.project
+.classpath
+
+# -- Logs
+*.log
+logs/
+npm-debug.log*
+yarn-error.log*
+
+# -- Test and coverage
+coverage/
+.coverage
+htmlcov/
+.nyc_output/
+junit.xml
+report.xml
+*.lcov
+
+# -- Docker
+.docker/
+
+# -- Temp
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig

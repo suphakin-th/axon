@@ -1,0 +1,192 @@
+# Universal CI/CD pipeline for GitLab
+# Free tier: 400 min/month on GitLab SaaS, unlimited on self-hosted
+# All secrets are stored in Settings -> CI/CD -> Variables with environment scope
+# .env is never committed - decoded from APP_ENV_B64 at deploy time
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+  rules:
+    - if: $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: never
+
+stages:
+  - test
+  - build
+  - deploy
+  - migrate
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_BUILDKIT: "1"
+  DOCKER_TLS_CERTDIR: ""
+
+# --------------------------------------------------------------------------
+# STAGE 1 - TEST
+# Runs on all MRs and on every push to uat/main
+# Uses docker-compose.test.yml which spins up an ephemeral DB
+# --------------------------------------------------------------------------
+test:
+  stage: test
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "main"
+
+# --------------------------------------------------------------------------
+# STAGE 2 - BUILD
+# Runs only on uat/main (not on MRs - saves CI minutes)
+# Uses GitLab Container Registry - free, no external account needed
+# --------------------------------------------------------------------------
+build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - IMAGE="${CI_REGISTRY_IMAGE}/app"
+    - |
+      docker build \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --cache-from "${IMAGE}:${CI_COMMIT_BRANCH}" \
+        -t "${IMAGE}:${CI_COMMIT_SHORT_SHA}" \
+        -t "${IMAGE}:${CI_COMMIT_BRANCH}" \
+        .
+    - docker push "${CI_REGISTRY_IMAGE}/app:${CI_COMMIT_SHORT_SHA}"
+    - docker push "${CI_REGISTRY_IMAGE}/app:${CI_COMMIT_BRANCH}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "uat" || $CI_COMMIT_BRANCH == "main"
+
+# --------------------------------------------------------------------------
+# Shared SSH setup used by all deploy and migrate jobs
+# DEPLOY_SSH_KEY is a file-type variable scoped to all environments
+# --------------------------------------------------------------------------
+.ssh_setup: &ssh_setup
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - eval $(ssh-agent -s)
+    - echo "$DEPLOY_SSH_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+# --------------------------------------------------------------------------
+# STAGE 3a - DEPLOY TO UAT (automatic)
+# Variables scoped to "uat" environment in GitLab CI/CD settings
+# --------------------------------------------------------------------------
+deploy:uat:
+  <<: *ssh_setup
+  stage: deploy
+  environment:
+    name: uat
+    url: http://$DEPLOY_HOST
+  resource_group: deploy-uat
+  script:
+    - APP_IMAGE="${CI_REGISTRY_IMAGE}/app"
+    - APP_VERSION="${CI_COMMIT_SHORT_SHA}"
+    - REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+    - ssh "$REMOTE" "mkdir -p ${DEPLOY_PATH}"
+    - scp docker-compose.yml "$REMOTE:${DEPLOY_PATH}/docker-compose.yml"
+    # Write .env from base64 secret - decoded on server, never stored in repo
+    - echo "${APP_ENV_B64}" | ssh "$REMOTE" "base64 -d > ${DEPLOY_PATH}/.env"
+    - ssh "$REMOTE" "printf '\nAPP_VERSION=${APP_VERSION}\nAPP_IMAGE=${APP_IMAGE}\n' >> ${DEPLOY_PATH}/.env"
+    # Pull and restart
+    - |
+      ssh "$REMOTE" "
+        cd ${DEPLOY_PATH} &&
+        docker login -u '${CI_REGISTRY_USER}' -p '${CI_REGISTRY_PASSWORD}' '${CI_REGISTRY}' &&
+        docker compose pull &&
+        docker compose up -d --remove-orphans
+      "
+    # Health check - polls up to 2 minutes
+    - |
+      for i in $(seq 1 8); do
+        ssh "$REMOTE" "curl -sf http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" \
+          && echo "Healthy after $((i * 15))s" && exit 0
+        echo "Attempt $i/8 - waiting 15s..." && sleep 15
+      done
+      echo "Health check failed after 120s" && exit 1
+  rules:
+    - if: $CI_COMMIT_BRANCH == "uat"
+      when: on_success
+
+# --------------------------------------------------------------------------
+# STAGE 3b - DEPLOY TO PRODUCTION (manual gate)
+# Click Play in the GitLab pipeline UI to proceed
+# Variables scoped to "production" environment - UAT vars not accessible here
+# --------------------------------------------------------------------------
+deploy:prod:
+  <<: *ssh_setup
+  stage: deploy
+  environment:
+    name: production
+    url: http://$DEPLOY_HOST
+  resource_group: deploy-prod
+  script:
+    - APP_IMAGE="${CI_REGISTRY_IMAGE}/app"
+    - APP_VERSION="${CI_COMMIT_SHORT_SHA}"
+    - REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+    - ssh "$REMOTE" "mkdir -p ${DEPLOY_PATH}"
+    - scp docker-compose.yml "$REMOTE:${DEPLOY_PATH}/docker-compose.yml"
+    - echo "${APP_ENV_B64}" | ssh "$REMOTE" "base64 -d > ${DEPLOY_PATH}/.env"
+    - ssh "$REMOTE" "printf '\nAPP_VERSION=${APP_VERSION}\nAPP_IMAGE=${APP_IMAGE}\n' >> ${DEPLOY_PATH}/.env"
+    - |
+      ssh "$REMOTE" "
+        cd ${DEPLOY_PATH} &&
+        docker login -u '${CI_REGISTRY_USER}' -p '${CI_REGISTRY_PASSWORD}' '${CI_REGISTRY}' &&
+        docker compose pull &&
+        docker compose up -d --remove-orphans
+      "
+    - |
+      for i in $(seq 1 8); do
+        ssh "$REMOTE" "curl -sf http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" \
+          && echo "Healthy after $((i * 15))s" && exit 0
+        echo "Attempt $i/8 - waiting 15s..." && sleep 15
+      done
+      echo "Health check failed after 120s" && exit 1
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+  allow_failure: false
+
+# --------------------------------------------------------------------------
+# STAGE 4 - MIGRATE (always manual)
+# resource_group prevents running deploy and migrate at the same time
+# Never set when: on_success here - always review before clicking
+# --------------------------------------------------------------------------
+migrate:uat:
+  <<: *ssh_setup
+  stage: migrate
+  environment:
+    name: uat
+  resource_group: deploy-uat
+  script:
+    - REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+    - echo "Running migration on UAT - ${MIGRATE_CMD}"
+    - ssh "$REMOTE" "cd ${DEPLOY_PATH} && docker compose run --rm --no-deps app sh -c '${MIGRATE_CMD}'"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "uat"
+      when: manual
+  allow_failure: false
+
+migrate:prod:
+  <<: *ssh_setup
+  stage: migrate
+  environment:
+    name: production
+  resource_group: deploy-prod
+  script:
+    - REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+    - echo "Running migration on PROD - ${MIGRATE_CMD}"
+    - ssh "$REMOTE" "cd ${DEPLOY_PATH} && docker compose run --rm --no-deps app sh -c '${MIGRATE_CMD}'"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+  allow_failure: false

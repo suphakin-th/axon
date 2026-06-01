@@ -1,0 +1,62 @@
+# CI test environment - ephemeral, discarded after each run
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm test
+#
+# The test service builds from the "test" stage of Dockerfile.
+# No volumes are mounted - each run starts clean with no leftover state.
+
+services:
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    environment:
+      CI: "true"
+      NODE_ENV: test
+      # Point DB connection to the ephemeral db-test container below
+      # DB_HOST: db-test
+      # DB_PORT: 5432
+      # DB_DATABASE: test
+      # DB_USERNAME: test
+      # DB_PASSWORD: test
+      # REDIS_URL: redis://redis-test:6379
+    depends_on:
+      db-test:
+        condition: service_healthy
+      # redis-test:
+      #   condition: service_healthy
+    networks:
+      - test_net
+
+  # Ephemeral test database - no named volume, discarded after test run
+  # Swap image to match your production database:
+  #   mysql:8 | mariadb:11 | mongo:7 | sqlserver:2022
+  db-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - test_net
+
+  # redis-test:
+  #   image: redis:7-alpine
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #   networks:
+  #     - test_net
+
+networks:
+  test_net:
+    driver: bridge

@@ -1,0 +1,71 @@
+# Production stack
+# Images are pulled from registry - never built here
+# APP_IMAGE and APP_VERSION are written to .env at deploy time by the CI pipeline
+
+services:
+
+  app:
+    image: ${APP_IMAGE}:${APP_VERSION:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-axon}_app
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${APP_PORT:-3000}:${APP_PORT:-3000}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${APP_PORT:-3000}${HEALTH_PATH:-/health} || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - app_net
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # --------------------------------------------------------------------------
+  # Optional: background worker
+  # Uncomment for queue workers (Celery, Sidekiq, Laravel Horizon, BullMQ, etc.)
+  # Set WORKER_CMD in your .env
+  # --------------------------------------------------------------------------
+  # worker:
+  #   image: ${APP_IMAGE}:${APP_VERSION:-latest}
+  #   container_name: ${COMPOSE_PROJECT_NAME:-axon}_worker
+  #   restart: unless-stopped
+  #   command: ["sh", "-c", "${WORKER_CMD}"]
+  #   env_file: .env
+  #   networks:
+  #     - app_net
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: 10m
+  #       max-file: "3"
+
+  # --------------------------------------------------------------------------
+  # Optional: Redis
+  # Uncomment if your app uses Redis for caching or queues
+  # --------------------------------------------------------------------------
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: ${COMPOSE_PROJECT_NAME:-axon}_redis
+  #   restart: unless-stopped
+  #   command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - app_net
+
+networks:
+  app_net:
+    driver: bridge
+
+# volumes:
+#   redis_data:

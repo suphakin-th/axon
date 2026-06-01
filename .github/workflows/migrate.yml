@@ -1,0 +1,38 @@
+name: Migrate
+
+# Triggered manually from the Actions tab
+# Actions -> migrate.yml -> Run workflow -> choose environment
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: uat
+        type: choice
+        options:
+          - uat
+          - production
+
+jobs:
+  migrate:
+    name: Run migration on ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Run migration via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: DEPLOY_PATH,MIGRATE_CMD
+          script: |
+            set -e
+            cd "$DEPLOY_PATH"
+            echo "Running migration: $MIGRATE_CMD"
+            docker compose run --rm --no-deps app sh -c "$MIGRATE_CMD"
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          MIGRATE_CMD: ${{ secrets.MIGRATE_CMD }}
