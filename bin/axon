@@ -1,0 +1,221 @@
+#!/usr/bin/env sh
+# axon - Universal CI/CD scaffold tool
+# https://github.com/suphakin-th/axon
+
+set -e
+
+VERSION="1.0.0"
+REPO="suphakin-th/axon"
+BASE_URL="https://raw.githubusercontent.com/${REPO}/main"
+
+# Files scaffolded by "axon init"
+COMMON_FILES="
+Dockerfile
+docker-compose.yml
+docker-compose.dev.yml
+docker-compose.test.yml
+.env.example
+.gitignore
+"
+
+GITHUB_FILES="
+.github/workflows/ci.yml
+.github/workflows/migrate.yml
+"
+
+GITLAB_FILES="
+.gitlab-ci.yml
+"
+
+# --------------------------------------------------------------------------
+# cmd_init
+# Download CI/CD template files from the axon GitHub repo into the
+# current working directory.
+# --------------------------------------------------------------------------
+cmd_init() {
+    platform="both"
+    force=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --platform) platform="$2"; shift ;;
+            --github)   platform="github" ;;
+            --gitlab)   platform="gitlab" ;;
+            --force)    force=1 ;;
+            *)
+                echo "axon: unknown option: $1" >&2
+                echo "Run 'axon help' for usage." >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    # Validate platform
+    case "$platform" in
+        github|gitlab|both) ;;
+        *)
+            echo "axon: invalid platform '$platform' (use: github, gitlab, both)" >&2
+            exit 1
+            ;;
+    esac
+
+    # Build final file list
+    files="$COMMON_FILES"
+    if [ "$platform" = "github" ] || [ "$platform" = "both" ]; then
+        files="$files $GITHUB_FILES"
+    fi
+    if [ "$platform" = "gitlab" ] || [ "$platform" = "both" ]; then
+        files="$files $GITLAB_FILES"
+    fi
+
+    echo "Scaffolding axon CI/CD (platform: $platform) ..."
+    echo ""
+
+    # Download each file
+    for file in $files; do
+        [ -z "$file" ] && continue
+
+        # Skip if exists and not forcing
+        if [ -f "$file" ] && [ "$force" -eq 0 ]; then
+            printf "  skip    %s (exists - use --force to overwrite)\n" "$file"
+            continue
+        fi
+
+        # Create parent directory if needed
+        dir=$(dirname "$file")
+        [ "$dir" != "." ] && mkdir -p "$dir"
+
+        # Download with curl or wget
+        if command -v curl > /dev/null 2>&1; then
+            if curl -fsSL "${BASE_URL}/${file}" -o "$file" 2>/dev/null; then
+                printf "  create  %s\n" "$file"
+            else
+                printf "  error   %s (download failed)\n" "$file" >&2
+            fi
+        elif command -v wget > /dev/null 2>&1; then
+            if wget -qO "$file" "${BASE_URL}/${file}" 2>/dev/null; then
+                printf "  create  %s\n" "$file"
+            else
+                printf "  error   %s (download failed)\n" "$file" >&2
+            fi
+        else
+            echo "axon: curl or wget is required to download templates" >&2
+            exit 1
+        fi
+    done
+
+    echo ""
+    echo "Done. Next steps:"
+    echo ""
+    echo "  1. Edit Dockerfile for your language (see comments inside)"
+    echo "  2. cp .env.example .env"
+    echo "  3. Edit .env with your local values"
+    echo "  4. Set CI/CD secrets (see README: https://github.com/${REPO})"
+    echo "  5. docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
+}
+
+# --------------------------------------------------------------------------
+# cmd_encode
+# Encode a .env file to base64 for storing in CI/CD secrets as APP_ENV_B64
+# --------------------------------------------------------------------------
+cmd_encode() {
+    file="${1:-.env}"
+
+    if [ ! -f "$file" ]; then
+        echo "axon: file not found: $file" >&2
+        exit 1
+    fi
+
+    # base64 -w 0 is Linux, plain base64 is macOS (no -w flag)
+    if base64 --help 2>&1 | grep -q -- "-w"; then
+        encoded=$(base64 -w 0 "$file")
+    else
+        encoded=$(base64 "$file" | tr -d '\n')
+    fi
+
+    echo "$encoded"
+    echo "" >&2
+    echo "Paste the above as APP_ENV_B64 in your CI/CD secret for the target environment." >&2
+}
+
+# --------------------------------------------------------------------------
+# cmd_decode
+# Decode APP_ENV_B64 back to readable .env content (preview only)
+# --------------------------------------------------------------------------
+cmd_decode() {
+    input="$1"
+
+    if [ -z "$input" ]; then
+        # Read from stdin if no argument
+        base64 -d
+    else
+        echo "$input" | base64 -d
+    fi
+}
+
+# --------------------------------------------------------------------------
+# cmd_version
+# --------------------------------------------------------------------------
+cmd_version() {
+    echo "axon v${VERSION}"
+}
+
+# --------------------------------------------------------------------------
+# cmd_help
+# --------------------------------------------------------------------------
+cmd_help() {
+    cat <<HELP
+axon v${VERSION} - Universal CI/CD scaffold
+
+Usage:
+  axon <command> [options]
+
+Commands:
+  init      Scaffold CI/CD files into the current project
+  encode    Encode a .env file to base64 for CI/CD secrets
+  decode    Decode a base64 string back to readable .env content
+  version   Show version number
+  help      Show this help
+
+Options for init:
+  --platform <p>   github, gitlab, or both (default: both)
+  --force          Overwrite existing files
+
+Examples:
+  axon init                       scaffold all CI/CD files into current dir
+  axon init --platform github     GitHub Actions files only
+  axon init --platform gitlab     GitLab CI files only
+  axon init --force               overwrite existing files
+
+  axon encode .env.uat            encode for UAT environment secret
+  axon encode .env.prod           encode for PROD environment secret
+  axon decode "\$APP_ENV_B64"      preview what a secret decodes to
+
+Docs: https://github.com/${REPO}
+HELP
+}
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+main() {
+    cmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        init)              cmd_init "$@" ;;
+        encode)            cmd_encode "$@" ;;
+        decode)            cmd_decode "$@" ;;
+        version|--version|-v) cmd_version ;;
+        help|--help|-h)    cmd_help ;;
+        *)
+            echo "axon: unknown command '$cmd'" >&2
+            echo "" >&2
+            cmd_help >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

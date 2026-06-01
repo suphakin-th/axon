@@ -35,6 +35,10 @@ out/
 public/hot/
 public/build/
 
+# -- Keep axon CLI source (bin/ would otherwise be ignored above)
+!bin/
+!bin/axon
+
 # -- OS
 .DS_Store
 .DS_Store?

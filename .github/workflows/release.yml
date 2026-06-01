@@ -1,0 +1,110 @@
+# Triggered by pushing a version tag: git tag v1.0.0 && git push --tags
+# Builds RPM and DEB packages and publishes them to GitHub Releases.
+# Users can then install with:
+#   sudo dnf install https://github.com/suphakin-th/axon/releases/latest/download/axon-1.0.0-1.noarch.rpm
+#   sudo apt install https://github.com/suphakin-th/axon/releases/latest/download/axon_1.0.0_all.deb
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build and publish packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Building axon v${VERSION}"
+
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y rpm
+
+      - name: Create output directory
+        run: mkdir -p dist
+
+      # ----------------------------------------------------------------
+      # Build RPM (for dnf / yum - Fedora, RHEL, CentOS, Amazon Linux)
+      # ----------------------------------------------------------------
+      - name: Build RPM
+        run: |
+          VERSION="${{ env.VERSION }}"
+
+          # Set up rpmbuild tree
+          mkdir -p ~/rpmbuild/{SPECS,SOURCES,BUILD,RPMS,SRPMS}
+
+          # Create source tarball
+          tar czf ~/rpmbuild/SOURCES/axon-${VERSION}.tar.gz \
+            --transform "s|^|axon-${VERSION}/|" \
+            bin/axon LICENSE 2>/dev/null || \
+          tar czf ~/rpmbuild/SOURCES/axon-${VERSION}.tar.gz \
+            --transform "s|^|axon-${VERSION}/|" \
+            bin/axon
+
+          # Patch version in spec
+          sed "s/^Version:.*/Version:        ${VERSION}/" axon.spec \
+            > ~/rpmbuild/SPECS/axon.spec
+
+          # Build
+          rpmbuild --define "_topdir $HOME/rpmbuild" \
+                   -bb ~/rpmbuild/SPECS/axon.spec
+
+          cp ~/rpmbuild/RPMS/noarch/axon-*.rpm dist/
+
+      # ----------------------------------------------------------------
+      # Build DEB (for apt - Debian, Ubuntu)
+      # ----------------------------------------------------------------
+      - name: Build DEB
+        run: |
+          VERSION="${{ env.VERSION }}"
+
+          PKG="dist/axon_${VERSION}_deb"
+          mkdir -p "${PKG}/DEBIAN"
+          mkdir -p "${PKG}/usr/local/bin"
+
+          # Write control file
+          sed "s/__VERSION__/${VERSION}/" package/debian/control \
+            > "${PKG}/DEBIAN/control"
+
+          # Install script
+          install -m 755 bin/axon "${PKG}/usr/local/bin/axon"
+
+          dpkg-deb --build "${PKG}" "dist/axon_${VERSION}_all.deb"
+          rm -rf "${PKG}"
+
+      # ----------------------------------------------------------------
+      # Update Homebrew formula SHA256
+      # ----------------------------------------------------------------
+      - name: Compute tarball SHA256 for Homebrew
+        run: |
+          VERSION="${{ env.VERSION }}"
+          URL="https://github.com/suphakin-th/axon/archive/refs/tags/v${VERSION}.tar.gz"
+          curl -fsSL "$URL" -o /tmp/axon-src.tar.gz
+          SHA=$(sha256sum /tmp/axon-src.tar.gz | awk '{print $1}')
+          sed -i "s/__SHA256__/${SHA}/" Formula/axon.rb
+          echo "SHA256=${SHA}" >> $GITHUB_ENV
+          cp Formula/axon.rb dist/axon.rb
+
+      # ----------------------------------------------------------------
+      # Create GitHub Release and upload assets
+      # ----------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.rpm
+            dist/*.deb
+            dist/axon.rb
+            install.sh
+            bin/axon

@@ -1,0 +1,15 @@
+Package: axon
+Version: __VERSION__
+Section: utils
+Priority: optional
+Architecture: all
+Depends: curl
+Maintainer: suphakin-th <suphakin.th@gmail.com>
+Homepage: https://github.com/suphakin-th/axon
+Description: Universal CI/CD scaffold for GitHub Actions and GitLab CI
+ axon scaffolds production-ready GitHub Actions and GitLab CI pipelines
+ for any language or framework.
+ .
+ Run "axon init" in any project directory to scaffold CI/CD files
+ immediately. Supports Node.js, Python, Go, PHP, Java, Ruby, .NET,
+ and any language that runs in Docker.

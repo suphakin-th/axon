@@ -1,7 +1,92 @@
 # Axon - Universal CI/CD Pipeline
 
-A production-ready CI/CD template that works for any language or framework.
+A production-ready CI/CD scaffold tool and template that works for any language or framework.
 Supports both GitHub Actions and GitLab CI with 100% free-tier tools and zero secrets in the repository.
+
+---
+
+## Installation
+
+### Linux - dnf (Fedora, RHEL, CentOS, Amazon Linux)
+
+```bash
+sudo dnf install https://github.com/suphakin-th/axon/releases/latest/download/axon-1.0.0-1.noarch.rpm
+```
+
+### Linux - apt (Debian, Ubuntu)
+
+```bash
+sudo apt install https://github.com/suphakin-th/axon/releases/latest/download/axon_1.0.0_all.deb
+```
+
+### macOS - Homebrew
+
+```bash
+brew tap suphakin-th/axon
+brew install axon
+```
+
+### Any OS - install script (Linux and macOS)
+
+```bash
+# With sudo (installs to /usr/local/bin)
+curl -fsSL https://raw.githubusercontent.com/suphakin-th/axon/main/install.sh | sudo sh
+
+# Without sudo (installs to ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/suphakin-th/axon/main/install.sh | sh
+```
+
+### From source (any OS with make)
+
+```bash
+git clone https://github.com/suphakin-th/axon.git
+cd axon
+sudo make install
+```
+
+### Windows - WSL or Git Bash
+
+```bash
+# Inside WSL or Git Bash
+curl -fsSL https://raw.githubusercontent.com/suphakin-th/axon/main/install.sh | sh
+```
+
+---
+
+## Usage
+
+```
+axon <command> [options]
+
+Commands:
+  init      Scaffold CI/CD files into the current project
+  encode    Encode a .env file to base64 for CI/CD secrets
+  decode    Decode a base64 string back to readable .env
+  version   Show version number
+  help      Show help
+
+Options for init:
+  --platform   github, gitlab, or both (default: both)
+  --force      Overwrite existing files
+```
+
+Scaffold CI/CD into any project:
+
+```bash
+cd your-project
+axon init                       # GitHub Actions + GitLab CI
+axon init --platform github     # GitHub Actions only
+axon init --platform gitlab     # GitLab CI only
+axon init --force               # overwrite existing files
+```
+
+Encode your .env for CI/CD secrets:
+
+```bash
+axon encode .env.uat            # encode UAT env -> paste as APP_ENV_B64
+axon encode .env.prod           # encode PROD env -> paste as APP_ENV_B64
+axon decode "$APP_ENV_B64"      # preview what a secret decodes to
+```
 
 ---
 
