@@ -8,8 +8,7 @@ VERSION="1.0.0"
 REPO="suphakin-th/axon"
 BASE_URL="https://raw.githubusercontent.com/${REPO}/main"
 
-# Files scaffolded by "axon init"
-COMMON_FILES="
+COMMON_TEMPLATES="
 Dockerfile
 docker-compose.yml
 docker-compose.dev.yml
@@ -18,30 +17,84 @@ docker-compose.test.yml
 .gitignore
 "
 
-GITHUB_FILES="
+GITHUB_TEMPLATES="
 .github/workflows/ci.yml
 .github/workflows/migrate.yml
 "
 
-GITLAB_FILES="
+GITLAB_TEMPLATES="
 .gitlab-ci.yml
 "
 
-# --------------------------------------------------------------------------
-# cmd_init
-# Download CI/CD template files from the axon GitHub repo into the
-# current working directory.
-# --------------------------------------------------------------------------
+# -- helpers ------------------------------------------------------------------
+
+# Pure: return the template file list for the given platform
+resolve_template_files() {
+    platform="$1"
+    echo "$COMMON_TEMPLATES"
+    case "$platform" in
+        github) echo "$GITHUB_TEMPLATES" ;;
+        gitlab) echo "$GITLAB_TEMPLATES" ;;
+        both)   echo "$GITHUB_TEMPLATES$GITLAB_TEMPLATES" ;;
+    esac
+}
+
+# Pure: download one file from the remote template repo into the working dir
+fetch_template() {
+    file="$1"
+    parentDir=$(dirname "$file")
+    [ "$parentDir" != "." ] && mkdir -p "$parentDir"
+
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL "${BASE_URL}/${file}" -o "$file" 2>/dev/null
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO "$file" "${BASE_URL}/${file}" 2>/dev/null
+    else
+        echo "axon: curl or wget is required" >&2 && exit 1
+    fi
+}
+
+# Pure: decide to skip or fetch one file; print the outcome
+scaffold_file() {
+    file="$1"
+    canOverwrite="$2"
+
+    [ -z "$file" ] && return 0
+
+    if [ -f "$file" ] && [ "$canOverwrite" -eq 0 ]; then
+        printf "  skip    %s (exists - use --force to overwrite)\n" "$file"
+        return 0
+    fi
+
+    if fetch_template "$file"; then
+        printf "  create  %s\n" "$file"
+    else
+        printf "  error   %s (download failed)\n" "$file" >&2
+    fi
+}
+
+# Pure: encode a file to base64, compatible with GNU base64 (Linux) and BSD base64 (macOS)
+portable_base64_encode() {
+    file="$1"
+    if base64 --help 2>&1 | grep -q -- "-w"; then
+        base64 -w 0 "$file"
+    else
+        base64 "$file" | tr -d '\n'
+    fi
+}
+
+# -- commands -----------------------------------------------------------------
+
 cmd_init() {
     platform="both"
-    force=0
+    canOverwrite=0
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --platform) platform="$2"; shift ;;
             --github)   platform="github" ;;
             --gitlab)   platform="gitlab" ;;
-            --force)    force=1 ;;
+            --force)    canOverwrite=1 ;;
             *)
                 echo "axon: unknown option: $1" >&2
                 echo "Run 'axon help' for usage." >&2
@@ -51,7 +104,6 @@ cmd_init() {
         shift
     done
 
-    # Validate platform
     case "$platform" in
         github|gitlab|both) ;;
         *)
@@ -60,110 +112,44 @@ cmd_init() {
             ;;
     esac
 
-    # Build final file list
-    files="$COMMON_FILES"
-    if [ "$platform" = "github" ] || [ "$platform" = "both" ]; then
-        files="$files $GITHUB_FILES"
-    fi
-    if [ "$platform" = "gitlab" ] || [ "$platform" = "both" ]; then
-        files="$files $GITLAB_FILES"
-    fi
-
     echo "Scaffolding axon CI/CD (platform: $platform) ..."
     echo ""
 
-    # Download each file
-    for file in $files; do
-        [ -z "$file" ] && continue
-
-        # Skip if exists and not forcing
-        if [ -f "$file" ] && [ "$force" -eq 0 ]; then
-            printf "  skip    %s (exists - use --force to overwrite)\n" "$file"
-            continue
-        fi
-
-        # Create parent directory if needed
-        dir=$(dirname "$file")
-        [ "$dir" != "." ] && mkdir -p "$dir"
-
-        # Download with curl or wget
-        if command -v curl > /dev/null 2>&1; then
-            if curl -fsSL "${BASE_URL}/${file}" -o "$file" 2>/dev/null; then
-                printf "  create  %s\n" "$file"
-            else
-                printf "  error   %s (download failed)\n" "$file" >&2
-            fi
-        elif command -v wget > /dev/null 2>&1; then
-            if wget -qO "$file" "${BASE_URL}/${file}" 2>/dev/null; then
-                printf "  create  %s\n" "$file"
-            else
-                printf "  error   %s (download failed)\n" "$file" >&2
-            fi
-        else
-            echo "axon: curl or wget is required to download templates" >&2
-            exit 1
-        fi
+    for file in $(resolve_template_files "$platform"); do
+        scaffold_file "$file" "$canOverwrite"
     done
 
     echo ""
     echo "Done. Next steps:"
     echo ""
     echo "  1. Edit Dockerfile for your language (see comments inside)"
-    echo "  2. cp .env.example .env"
-    echo "  3. Edit .env with your local values"
-    echo "  4. Set CI/CD secrets (see README: https://github.com/${REPO})"
-    echo "  5. docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
+    echo "  2. cp .env.example .env && edit .env with your local values"
+    echo "  3. Set CI/CD secrets (see README: https://github.com/${REPO})"
+    echo "  4. docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d"
 }
 
-# --------------------------------------------------------------------------
-# cmd_encode
-# Encode a .env file to base64 for storing in CI/CD secrets as APP_ENV_B64
-# --------------------------------------------------------------------------
 cmd_encode() {
     file="${1:-.env}"
+    [ ! -f "$file" ] && echo "axon: file not found: $file" >&2 && exit 1
 
-    if [ ! -f "$file" ]; then
-        echo "axon: file not found: $file" >&2
-        exit 1
-    fi
-
-    # base64 -w 0 is Linux, plain base64 is macOS (no -w flag)
-    if base64 --help 2>&1 | grep -q -- "-w"; then
-        encoded=$(base64 -w 0 "$file")
-    else
-        encoded=$(base64 "$file" | tr -d '\n')
-    fi
-
-    echo "$encoded"
+    portable_base64_encode "$file"
     echo "" >&2
     echo "Paste the above as APP_ENV_B64 in your CI/CD secret for the target environment." >&2
 }
 
-# --------------------------------------------------------------------------
-# cmd_decode
-# Decode APP_ENV_B64 back to readable .env content (preview only)
-# --------------------------------------------------------------------------
 cmd_decode() {
     input="$1"
-
     if [ -z "$input" ]; then
-        # Read from stdin if no argument
         base64 -d
     else
         echo "$input" | base64 -d
     fi
 }
 
-# --------------------------------------------------------------------------
-# cmd_version
-# --------------------------------------------------------------------------
 cmd_version() {
     echo "axon v${VERSION}"
 }
 
-# --------------------------------------------------------------------------
-# cmd_help
-# --------------------------------------------------------------------------
 cmd_help() {
     cat <<HELP
 axon v${VERSION} - Universal CI/CD scaffold
@@ -196,19 +182,18 @@ Docs: https://github.com/${REPO}
 HELP
 }
 
-# --------------------------------------------------------------------------
-# main
-# --------------------------------------------------------------------------
+# -- entry point --------------------------------------------------------------
+
 main() {
     cmd="${1:-help}"
     shift 2>/dev/null || true
 
     case "$cmd" in
-        init)              cmd_init "$@" ;;
-        encode)            cmd_encode "$@" ;;
-        decode)            cmd_decode "$@" ;;
+        init)                 cmd_init "$@" ;;
+        encode)               cmd_encode "$@" ;;
+        decode)               cmd_decode "$@" ;;
         version|--version|-v) cmd_version ;;
-        help|--help|-h)    cmd_help ;;
+        help|--help|-h)       cmd_help ;;
         *)
             echo "axon: unknown command '$cmd'" >&2
             echo "" >&2
