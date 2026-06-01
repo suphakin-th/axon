@@ -85,7 +85,7 @@ jobs:
   deploy-uat:
     name: Deploy to UAT
     needs: build
-    if: github.ref == 'refs/heads/uat'
+    if: github.ref == 'refs/heads/uat' && secrets.DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     environment: uat
     steps:
@@ -138,7 +138,7 @@ jobs:
   deploy-prod:
     name: Deploy to PROD
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && secrets.DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     environment: production
     steps:
