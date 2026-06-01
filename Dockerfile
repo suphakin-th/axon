@@ -24,7 +24,7 @@ COPY package*.json ./
 # swap: COPY Gemfile Gemfile.lock ./       # Ruby
 # swap: COPY *.csproj ./                   # .NET
 
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && mkdir -p /app/node_modules
 # swap: pip install --no-cache-dir -r requirements.txt   # Python
 # swap: go mod download                                  # Go
 # swap: composer install --no-dev --no-interaction       # PHP
@@ -76,7 +76,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm run build && mkdir -p /app/dist
 # swap: go build -ldflags="-s -w" -o /app/server ./cmd/server  # Go
 # swap: mvn package -DskipTests -q                             # Java Maven
 # swap: dotnet publish -c Release -o /app/publish              # .NET

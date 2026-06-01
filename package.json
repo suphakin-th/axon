@@ -5,7 +5,7 @@
   "scripts": {
     "test": "echo \"Replace this with your test command (jest, vitest, mocha, etc.)\" && exit 0",
     "dev": "echo \"Replace this with your dev server command (node, nodemon, ts-node, etc.)\" && exit 0",
-    "build": "echo \"Replace this with your build command (tsc, vite build, webpack, etc.)\" && exit 0"
+    "build": "mkdir -p dist && printf 'console.log(\"axon v1.0.0 - replace this with your application\");\\n' > dist/server.js"
   },
   "keywords": ["cicd", "docker", "github-actions", "gitlab-ci", "scaffold"],
   "license": "MIT"
