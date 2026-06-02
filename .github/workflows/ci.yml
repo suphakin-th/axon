@@ -154,7 +154,7 @@ jobs:
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
           # Write .env from base64 secret - decoded at deploy time, never stored in repo
-          echo "$APP_ENV_B64" | base64 -d > .env
+          printf '%s' "$APP_ENV_B64" | tr -d '\r\n' | base64 -d > .env
           printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
 
           # Pull new image and restart containers
@@ -237,7 +237,7 @@ jobs:
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-          echo "$APP_ENV_B64" | base64 -d > .env
+          printf '%s' "$APP_ENV_B64" | tr -d '\r\n' | base64 -d > .env
           printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
 
           docker compose pull
