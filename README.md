@@ -1,4 +1,4 @@
-# Axon - Universal CI/CD Pipeline
+# Axon - Universal CI/CD and Monitoring Framework
 
 [![CI/CD](https://github.com/suphakin-th/axon/actions/workflows/ci.yml/badge.svg)](https://github.com/suphakin-th/axon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/suphakin-th/axon)](LICENSE)
@@ -9,6 +9,35 @@
 
 A production-ready CI/CD scaffold tool and template that works for any language or framework.
 Supports both GitHub Actions and GitLab CI with 100% free-tier tools and zero secrets in the repository.
+
+> **What is Axon?** Axon is a framework for setting up CI/CD *and* monitoring on any project, in any
+> language. You run `axon init` inside your project and it scaffolds Docker-based pipelines (GitHub Actions
+> and GitLab CI), a deploy flow, and an optional Prometheus / Grafana / Loki monitoring stack. Axon is
+> **infrastructure tooling you drop into other projects** - it is not an application or a library you import,
+> and it has no business logic of its own. Think of it as `create-react-app`, but for your delivery
+> pipeline and observability instead of a frontend.
+
+### Axon is / is not
+
+| Axon is | Axon is not |
+|---------|-------------|
+| A scaffold + template for CI/CD and monitoring | An application, API, or service |
+| Language-agnostic - you edit only the Dockerfile | A library you import into your code |
+| GitHub Actions + GitLab CI, free-tier only | Tied to a single language or framework |
+| A Docker-based deploy flow + Prometheus/Grafana/Loki stack | A place where your business logic lives |
+
+**Note on the name:** this Axon is a CI/CD and monitoring scaffold. It is unrelated to other projects that
+share the name "Axon" (for example the Elixir `Nx` neural-network library) - there is no machine-learning
+code here.
+
+### How it works in 30 seconds
+
+```
+cd your-project          # any language: Node, Python, Go, PHP, Rust, ...
+axon init                # drops in CI/CD pipelines + Docker + monitoring config
+# edit the Dockerfile for your stack, set CI secrets, push
+# -> test -> build image -> deploy -> health check -> metrics + logs + alerts
+```
 
 ---
 
