@@ -1,5 +1,12 @@
 # Axon - Universal CI/CD Pipeline
 
+[![CI/CD](https://github.com/suphakin-th/axon/actions/workflows/ci.yml/badge.svg)](https://github.com/suphakin-th/axon/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/suphakin-th/axon)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/suphakin-th/axon/releases)
+![CI Platforms](https://img.shields.io/badge/CI-GitHub%20Actions%20%7C%20GitLab%20CI-2088FF)
+![Build](https://img.shields.io/badge/build-amd64%20%7C%20arm64-success)
+![Deploy](https://img.shields.io/badge/deploy-Cloudflare%20Tunnel-F38020)
+
 A production-ready CI/CD scaffold tool and template that works for any language or framework.
 Supports both GitHub Actions and GitLab CI with 100% free-tier tools and zero secrets in the repository.
 
