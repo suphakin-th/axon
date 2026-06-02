@@ -41,6 +41,7 @@ jobs:
 # STAGE 2 - BUILD AND PUSH
 # Runs only on push to uat/main (not on PRs - saves CI minutes)
 # Registry: ghcr.io - free, no DockerHub rate limits for your own images
+# Multi-arch: builds amd64 + arm64 so the image runs on a Raspberry Pi (arm64)
 # --------------------------------------------------------------------------
   build:
     name: Build and Push Image
@@ -54,6 +55,9 @@ jobs:
       sha: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,6 +74,8 @@ jobs:
         with:
           context: .
           push: true
+          # amd64 for cloud VMs, arm64 for the Raspberry Pi 5 deploy target
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.ref_name }}
@@ -79,7 +85,10 @@ jobs:
 
 # --------------------------------------------------------------------------
 # STAGE 3a - DEPLOY TO UAT (automatic)
-# Secrets are scoped to the "uat" environment only
+# Reaches the Raspberry Pi through a Cloudflare Tunnel - no open router ports.
+# The runner authenticates to the tunnel with a Cloudflare Access service token
+# and SSHes in via a cloudflared ProxyCommand.
+# Secrets are scoped to the "uat" environment only.
 # Set up at: Settings -> Environments -> uat -> Add secret
 # --------------------------------------------------------------------------
   deploy-uat:
@@ -89,37 +98,30 @@ jobs:
     runs-on: ubuntu-latest
     environment: uat
     steps:
-      - name: SSH deploy to UAT
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: APP_VERSION,APP_IMAGE,APP_ENV_B64,GHCR_TOKEN,GHCR_USER,APP_PORT,HEALTH_PATH,DEPLOY_PATH
-          script: |
-            set -e
-            mkdir -p "$DEPLOY_PATH"
-            cd "$DEPLOY_PATH"
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
-            # Authenticate to registry using the workflow token
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+      - name: Configure SSH over Cloudflare Tunnel
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          cat > ~/.ssh/config <<EOF
+          Host ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            ProxyCommand cloudflared access ssh --hostname %h
+            StrictHostKeyChecking accept-new
+          EOF
 
-            # Write .env from base64 secret - decoded at deploy time, never stored in repo
-            echo "$APP_ENV_B64" | base64 -d > .env
-            printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
-
-            # Pull new image and restart containers
-            docker compose pull
-            docker compose up -d --remove-orphans
-
-            # Health check - polls up to 2 minutes
-            for i in $(seq 1 8); do
-              curl -sf "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" > /dev/null 2>&1 \
-                && echo "Healthy after $((i * 15))s" && exit 0
-              echo "Attempt $i/8 - waiting 15s..." && sleep 15
-            done
-            echo "Health check failed after 120s" && exit 1
+      - name: Deploy to UAT
         env:
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           APP_VERSION: ${{ github.sha }}
           APP_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           APP_ENV_B64: ${{ secrets.APP_ENV_B64 }}
@@ -128,6 +130,39 @@ jobs:
           APP_PORT: ${{ secrets.APP_PORT }}
           HEALTH_PATH: ${{ secrets.HEALTH_PATH }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh "${{ secrets.DEPLOY_HOST }}" \
+            APP_VERSION="$APP_VERSION" \
+            APP_IMAGE="$APP_IMAGE" \
+            APP_ENV_B64="$APP_ENV_B64" \
+            GHCR_TOKEN="$GHCR_TOKEN" \
+            GHCR_USER="$GHCR_USER" \
+            APP_PORT="$APP_PORT" \
+            HEALTH_PATH="$HEALTH_PATH" \
+            DEPLOY_PATH="$DEPLOY_PATH" \
+            'bash -se' <<'SCRIPT'
+          mkdir -p "$DEPLOY_PATH"
+          cd "$DEPLOY_PATH"
+
+          # Authenticate to registry using the workflow token
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          # Write .env from base64 secret - decoded at deploy time, never stored in repo
+          echo "$APP_ENV_B64" | base64 -d > .env
+          printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
+
+          # Pull new image and restart containers
+          docker compose pull
+          docker compose up -d --remove-orphans
+
+          # Health check - polls up to 2 minutes
+          for i in $(seq 1 8); do
+            curl -sf "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" > /dev/null 2>&1 \
+              && echo "Healthy after $((i * 15))s" && exit 0
+            echo "Attempt $i/8 - waiting 15s..." && sleep 15
+          done
+          echo "Health check failed after 120s" && exit 1
+          SCRIPT
 
 # --------------------------------------------------------------------------
 # STAGE 3b - DEPLOY TO PRODUCTION (manual gate)
@@ -142,33 +177,30 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: SSH deploy to PROD
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: APP_VERSION,APP_IMAGE,APP_ENV_B64,GHCR_TOKEN,GHCR_USER,APP_PORT,HEALTH_PATH,DEPLOY_PATH
-          script: |
-            set -e
-            mkdir -p "$DEPLOY_PATH"
-            cd "$DEPLOY_PATH"
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+      - name: Configure SSH over Cloudflare Tunnel
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          cat > ~/.ssh/config <<EOF
+          Host ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            ProxyCommand cloudflared access ssh --hostname %h
+            StrictHostKeyChecking accept-new
+          EOF
 
-            echo "$APP_ENV_B64" | base64 -d > .env
-            printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
-
-            docker compose pull
-            docker compose up -d --remove-orphans
-
-            for i in $(seq 1 8); do
-              curl -sf "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" > /dev/null 2>&1 \
-                && echo "Healthy after $((i * 15))s" && exit 0
-              echo "Attempt $i/8 - waiting 15s..." && sleep 15
-            done
-            echo "Health check failed after 120s" && exit 1
+      - name: Deploy to PROD
         env:
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           APP_VERSION: ${{ github.sha }}
           APP_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           APP_ENV_B64: ${{ secrets.APP_ENV_B64 }}
@@ -177,3 +209,32 @@ jobs:
           APP_PORT: ${{ secrets.APP_PORT }}
           HEALTH_PATH: ${{ secrets.HEALTH_PATH }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh "${{ secrets.DEPLOY_HOST }}" \
+            APP_VERSION="$APP_VERSION" \
+            APP_IMAGE="$APP_IMAGE" \
+            APP_ENV_B64="$APP_ENV_B64" \
+            GHCR_TOKEN="$GHCR_TOKEN" \
+            GHCR_USER="$GHCR_USER" \
+            APP_PORT="$APP_PORT" \
+            HEALTH_PATH="$HEALTH_PATH" \
+            DEPLOY_PATH="$DEPLOY_PATH" \
+            'bash -se' <<'SCRIPT'
+          mkdir -p "$DEPLOY_PATH"
+          cd "$DEPLOY_PATH"
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          echo "$APP_ENV_B64" | base64 -d > .env
+          printf "\nAPP_VERSION=%s\nAPP_IMAGE=%s\n" "$APP_VERSION" "$APP_IMAGE" >> .env
+
+          docker compose pull
+          docker compose up -d --remove-orphans
+
+          for i in $(seq 1 8); do
+            curl -sf "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" > /dev/null 2>&1 \
+              && echo "Healthy after $((i * 15))s" && exit 0
+            echo "Attempt $i/8 - waiting 15s..." && sleep 15
+          done
+          echo "Health check failed after 120s" && exit 1
+          SCRIPT
