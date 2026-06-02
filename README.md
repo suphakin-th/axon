@@ -99,6 +99,8 @@ You adapt only the Dockerfile.
 Key properties:
 - Works on GitHub Actions and GitLab CI with equivalent pipelines
 - No external paid services required
+- Builds multi-arch images (linux/amd64 + linux/arm64) - the same image runs on cloud VMs and on ARM boards like a Raspberry Pi
+- GitHub deploys reach the server over a Cloudflare Tunnel - no inbound ports, no SSH exposed to the internet
 - All secrets stored per-environment in CI/CD variables, never in code
 - .env is written to the server at deploy time from a base64-encoded secret
 - Monitoring stack included (Prometheus, Grafana, Loki, Alertmanager)
@@ -107,28 +109,40 @@ Key properties:
 
 ## Prerequisites
 
-- A server with Docker and Docker Compose installed (Ubuntu 22.04+ recommended)
-- SSH access to the server with an ed25519 key pair (no passphrase)
-- A GitHub or GitLab account
+- A server with Docker and Docker Compose installed - any of: a cloud VM, a home server, or an ARM board such as a Raspberry Pi 5 (64-bit OS required for arm64 images)
+- A `deploy` user on the server that is a member of the docker group, with an ed25519 key pair (no passphrase)
+- A way for GitHub to reach the server - a Cloudflare Tunnel is recommended (no open ports); a public IP with direct SSH also works
+- A GitHub or GitLab account, and a free Cloudflare account if using the tunnel
 
 Server setup (one-time):
 
 ```bash
-sudo apt update && sudo apt install -y docker.io docker-compose-plugin curl
-sudo useradd -m -s /bin/bash deploy
+# Debian/Ubuntu/Raspberry Pi OS
+curl -fsSL https://get.docker.com | sh
+sudo adduser --disabled-password --gecos "" deploy
 sudo usermod -aG docker deploy
-sudo mkdir -p /srv/axon
-sudo chown deploy:deploy /srv/axon
-echo "<your public key>" | sudo -u deploy tee -a /home/deploy/.ssh/authorized_keys
+sudo mkdir -p /home/deploy/.ssh && sudo chmod 700 /home/deploy/.ssh
 ```
 
-Generate deploy key pair:
+Generate the deploy key pair and trust it for the deploy user:
 
 ```bash
-ssh-keygen -t ed25519 -C "ci-deploy" -f ~/.ssh/id_ed25519_deploy -N ""
-# id_ed25519_deploy     -> CI secret DEPLOY_SSH_KEY
-# id_ed25519_deploy.pub -> server authorized_keys
+ssh-keygen -t ed25519 -C "ci-deploy" -f ~/deploy_key -N ""
+sudo tee /home/deploy/.ssh/authorized_keys < ~/deploy_key.pub > /dev/null
+sudo chown -R deploy:deploy /home/deploy/.ssh
+sudo chmod 600 /home/deploy/.ssh/authorized_keys
+# ~/deploy_key (private) -> CI secret DEPLOY_SSH_KEY
 ```
+
+### Deploy access over a Cloudflare Tunnel (recommended)
+
+The GitHub deploy connects through a Cloudflare Tunnel, so the server needs no open ports and SSH is never exposed to the internet.
+
+1. Install and run `cloudflared` on the server and create a tunnel that maps a hostname (e.g. `ssh.example.com`) to `ssh://localhost:22`.
+2. In Cloudflare Zero Trust, create an Access **service token** (`Access -> Service Auth`) and a self-hosted Access application protecting that hostname with a **Service Auth** policy that allows the token.
+3. The runner authenticates with the token and tunnels SSH via `ProxyCommand cloudflared access ssh --hostname %h` (already wired in `ci.yml`).
+
+The token's Client ID and Secret become the `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` secrets below, and `DEPLOY_HOST` is the tunnel hostname.
 
 ---
 
@@ -191,8 +205,9 @@ The test command is defined in the Dockerfile test stage CMD and can be anything
 
 Runs only on pushes to uat and main (not on pull requests).
 
-Builds the Docker image, tags it with both the git SHA (immutable) and branch name (cache pointer),
-then pushes to the container registry.
+Builds a multi-arch Docker image (linux/amd64 + linux/arm64 via QEMU), tags it with both the git SHA
+(immutable) and branch name (cache pointer), then pushes to the container registry. The arm64 variant
+is what lets the same image run on a Raspberry Pi or other ARM server.
 
 - GitHub: ghcr.io (free for public repos, 500 MB for private)
 - GitLab: GitLab Container Registry (free, unlimited)
@@ -205,11 +220,15 @@ then pushes to the container registry.
 | deploy:prod  | main push  | Manual - reviewer approves in GitHub / click Play in GitLab |
 
 The deploy job:
-1. SSHes to the server
-2. Decodes APP_ENV_B64 from the CI secret and writes it to /srv/axon/.env
-3. Appends APP_VERSION and APP_IMAGE to the .env
-4. Runs docker compose pull and docker compose up -d --remove-orphans
-5. Polls the health endpoint for up to 2 minutes
+1. Connects to the server over the Cloudflare Tunnel (SSH via `cloudflared` ProxyCommand, authenticated by the Access service token)
+2. Copies docker-compose.yml to the server's DEPLOY_PATH
+3. Decodes APP_ENV_B64 from the CI secret and writes it to DEPLOY_PATH/.env (carriage returns stripped first)
+4. Appends APP_VERSION (git SHA) and APP_IMAGE to the .env
+5. Runs docker compose pull and docker compose up -d --remove-orphans
+6. Polls the health endpoint for up to 2 minutes
+
+Run multiple environments on one host by giving each its own APP_PORT, DEPLOY_PATH, and
+COMPOSE_PROJECT_NAME (set in the .env) so containers, networks, and ports never collide.
 
 ### Stage 4 - migrate
 
@@ -232,7 +251,7 @@ Always check pending migrations before clicking. Review what will change before 
 | GitLab CI                 | 400 min/month SaaS, unlimited self-hosted | CI runner                      |
 | ghcr.io                   | Free public, 500 MB private               | Image registry for GitHub      |
 | GitLab Container Registry | Free unlimited                            | Image registry for GitLab      |
-| appleboy/ssh-action       | Free open-source                          | SSH deploy from GitHub Actions |
+| Cloudflare Tunnel + Access| Free                                      | Reach the server with no open ports; service-token auth for CI |
 | Docker Compose            | Free                                      | Dev and production orchestration|
 
 ---
@@ -258,21 +277,28 @@ base64 -w 0 .env.prod  # paste as APP_ENV_B64 in the production environment
 
 ### GitHub - Settings -> Environments -> [uat / production] -> Secrets
 
-| Secret         | Description                                    |
-|----------------|------------------------------------------------|
-| DEPLOY_HOST    | Server IP or hostname                          |
-| DEPLOY_USER    | SSH username (e.g. deploy)                     |
-| DEPLOY_SSH_KEY | Private SSH key, ed25519, no passphrase        |
-| APP_ENV_B64    | base64-encoded .env content for this env       |
-| APP_PORT       | Port the app exposes (e.g. 3000)               |
-| HEALTH_PATH    | Health check endpoint (e.g. /health)           |
-| DEPLOY_PATH    | Server directory (e.g. /srv/axon)              |
-| MIGRATE_CMD    | Migration command (e.g. npm run migrate)       |
+| Secret                  | Description                                              |
+|-------------------------|----------------------------------------------------------|
+| DEPLOY_HOST             | Tunnel hostname (e.g. ssh.example.com), or server IP if not using a tunnel |
+| DEPLOY_USER             | SSH username (e.g. deploy)                               |
+| DEPLOY_SSH_KEY          | Private SSH key, ed25519, no passphrase                  |
+| CF_ACCESS_CLIENT_ID     | Cloudflare Access service token Client ID                |
+| CF_ACCESS_CLIENT_SECRET | Cloudflare Access service token Client Secret            |
+| APP_ENV_B64             | base64-encoded .env content for this env                 |
+| APP_PORT                | Port the app exposes (e.g. 8080)                         |
+| HEALTH_PATH             | Health check endpoint (e.g. /health)                     |
+| DEPLOY_PATH             | Server directory (e.g. /home/deploy/axon)                |
+| MIGRATE_CMD             | Migration command (e.g. npm run migrate)                 |
 
-GITHUB_TOKEN is auto-generated per job. No setup required.
+GITHUB_TOKEN is auto-generated per job and used for ghcr.io auth. No setup required.
+CF_ACCESS_* are only needed when deploying through a Cloudflare Tunnel.
 
 To enable the manual gate for production:
 Settings -> Environments -> production -> Required reviewers -> add yourself.
+
+Note: do not pipe a secret's value into `gh secret set` from PowerShell - it injects carriage
+returns (CRLF) that corrupt SSH keys and base64 values. Use the GitHub UI, or pipe from a Unix
+shell (Git Bash, WSL). The `axon encode` command writes clean output for this reason.
 
 ### GitLab - Settings -> CI/CD -> Variables (set Environment scope per row)
 
@@ -448,8 +474,8 @@ sudo systemctl restart docker
 Find the previous image SHA from the pipeline history, then on the server:
 
 ```bash
-ssh deploy@SERVER
-cd /srv/axon
+ssh deploy@DEPLOY_HOST          # or your tunnel host alias
+cd "$DEPLOY_PATH"               # e.g. /home/deploy/axon
 # Edit .env: set APP_VERSION to the previous commit SHA
 docker compose pull
 docker compose up -d --remove-orphans
@@ -473,7 +499,7 @@ Option B - Write a compensating migration:
 
 Option C - Roll back one step if down() is implemented:
 ```bash
-ssh deploy@SERVER
-cd /srv/axon
+ssh deploy@DEPLOY_HOST
+cd "$DEPLOY_PATH"
 docker compose run --rm --no-deps app sh -c "your-framework rollback --step=1"
 ```
