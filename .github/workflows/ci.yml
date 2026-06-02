@@ -98,6 +98,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: uat
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install cloudflared
         run: |
           curl -fsSL -o cloudflared.deb \
@@ -131,6 +133,10 @@ jobs:
           HEALTH_PATH: ${{ secrets.HEALTH_PATH }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
+          # The deploy job has no repo on the server, so ship the compose file over the tunnel
+          ssh "${{ secrets.DEPLOY_HOST }}" "mkdir -p '$DEPLOY_PATH'"
+          scp docker-compose.yml "${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/docker-compose.yml"
+
           ssh "${{ secrets.DEPLOY_HOST }}" \
             APP_VERSION="$APP_VERSION" \
             APP_IMAGE="$APP_IMAGE" \
@@ -177,6 +183,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install cloudflared
         run: |
           curl -fsSL -o cloudflared.deb \
@@ -210,6 +218,10 @@ jobs:
           HEALTH_PATH: ${{ secrets.HEALTH_PATH }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
+          # The deploy job has no repo on the server, so ship the compose file over the tunnel
+          ssh "${{ secrets.DEPLOY_HOST }}" "mkdir -p '$DEPLOY_PATH'"
+          scp docker-compose.yml "${{ secrets.DEPLOY_HOST }}:$DEPLOY_PATH/docker-compose.yml"
+
           ssh "${{ secrets.DEPLOY_HOST }}" \
             APP_VERSION="$APP_VERSION" \
             APP_IMAGE="$APP_IMAGE" \

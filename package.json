@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "Universal CI/CD scaffold for GitHub Actions and GitLab CI",
   "scripts": {
-    "test": "echo \"Replace this with your test command (jest, vitest, mocha, etc.)\" && exit 0",
-    "dev": "echo \"Replace this with your dev server command (node, nodemon, ts-node, etc.)\" && exit 0",
-    "build": "mkdir -p dist && printf 'console.log(\"axon v1.0.0 - replace this with your application\");\\n' > dist/server.js"
+    "test": "node --test 2>/dev/null || echo \"No tests yet - replace with jest, vitest, mocha, etc.\"",
+    "dev": "node src/server.js",
+    "start": "node dist/server.js",
+    "build": "mkdir -p dist && cp src/server.js dist/server.js"
   },
   "keywords": ["cicd", "docker", "github-actions", "gitlab-ci", "scaffold"],
   "license": "MIT"
