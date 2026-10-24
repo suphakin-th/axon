@@ -2,6 +2,13 @@ name: Migrate
 
 # Triggered manually from the Actions tab
 # Actions -> migrate.yml -> Run workflow -> choose environment
+#
+# The Pi has no ports open on the router, so the only way in is the Cloudflare
+# Tunnel - the same route ci.yml takes: install cloudflared, authenticate to
+# Access with the service token, reach SSH through a ProxyCommand.
+# appleboy/ssh-action was used here and cannot do that; it only understands a
+# jump host, so it dialled DEPLOY_HOST directly and could never arrive. This
+# connects with ssh exactly the way ci.yml does.
 on:
   workflow_dispatch:
     inputs:
@@ -13,26 +20,70 @@ on:
         options:
           - uat
           - production
+      connectivity_only:
+        description: Prove the tunnel, Access token and SSH key work; run no migration
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   migrate:
-    name: Run migration on ${{ inputs.environment }}
+    name: Migrate ${{ inputs.environment }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
 
     steps:
-      - name: Run migration via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: DEPLOY_PATH,MIGRATE_CMD
-          script: |
-            set -e
-            cd "$DEPLOY_PATH"
-            echo "Running migration: $MIGRATE_CMD"
-            docker compose run --rm --no-deps app sh -c "$MIGRATE_CMD"
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Configure SSH over Cloudflare Tunnel
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          cat > ~/.ssh/config <<EOF
+          Host ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            ProxyCommand cloudflared access ssh --hostname %h
+            StrictHostKeyChecking accept-new
+          EOF
+
+      # Runs on every dispatch, including a real migration, so a failure is
+      # attributed to the hop rather than to the migration command.
+      - name: Check the tunnel, the Access token and the deploy path
         env:
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh "${{ secrets.DEPLOY_HOST }}" \
+            DEPLOY_PATH="$DEPLOY_PATH" 'bash -se' <<'SCRIPT'
+          set -e
+          echo "connected as $(whoami)@$(hostname)"
+          [ -d "$DEPLOY_PATH" ] || { echo "DEPLOY_PATH does not exist: $DEPLOY_PATH"; exit 1; }
+          cd "$DEPLOY_PATH"
+          docker compose ps --format '{{.Name}}\t{{.State}}'
+          SCRIPT
+
+      - name: Run migration
+        if: ${{ !inputs.connectivity_only }}
+        env:
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           MIGRATE_CMD: ${{ secrets.MIGRATE_CMD }}
+        run: |
+          [ -n "$MIGRATE_CMD" ] || { echo "MIGRATE_CMD is not set for this environment"; exit 1; }
+          ssh "${{ secrets.DEPLOY_HOST }}" \
+            DEPLOY_PATH="$DEPLOY_PATH" \
+            MIGRATE_CMD="$MIGRATE_CMD" 'bash -se' <<'SCRIPT'
+          set -e
+          cd "$DEPLOY_PATH"
+          echo "Running migration: $MIGRATE_CMD"
+          docker compose run --rm --no-deps app sh -c "$MIGRATE_CMD"
+          SCRIPT
